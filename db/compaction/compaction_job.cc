@@ -57,6 +57,9 @@
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
 
+#include "cachestream/cachestream.h"
+#include <sys/syscall.h>
+
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetCompactionReasonString(CompactionReason compaction_reason) {
@@ -620,6 +623,11 @@ void CompactionJob::GenSubcompactionBoundaries() {
 }
 
 Status CompactionJob::Run() {
+  //auto& cachestream = Cachestream::getInstance();
+
+  //int tid = syscall(SYS_gettid);
+  //cachestream.add_tgid(tid);
+
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
   TEST_SYNC_POINT("CompactionJob::Run():Start");
@@ -847,6 +855,8 @@ Status CompactionJob::Run() {
   TEST_SYNC_POINT("CompactionJob::Run():End");
   compact_->status = status;
   TEST_SYNC_POINT_CALLBACK("CompactionJob::Run():EndStatusSet", &status);
+
+  //cachestream.remove_tgid(tid);
   return status;
 }
 
