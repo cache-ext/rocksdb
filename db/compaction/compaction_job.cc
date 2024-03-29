@@ -623,10 +623,10 @@ void CompactionJob::GenSubcompactionBoundaries() {
 }
 
 Status CompactionJob::Run() {
-  //auto& cachestream = Cachestream::getInstance();
+  auto& cachestream = Cachestream::getInstance();
 
-  //int tid = syscall(SYS_gettid);
-  //cachestream.add_tgid(tid);
+  int tid = syscall(SYS_gettid);
+  cachestream.add_tgid(tid);
 
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
@@ -856,7 +856,7 @@ Status CompactionJob::Run() {
   compact_->status = status;
   TEST_SYNC_POINT_CALLBACK("CompactionJob::Run():EndStatusSet", &status);
 
-  //cachestream.remove_tgid(tid);
+  cachestream.remove_tgid(tid);
   return status;
 }
 
