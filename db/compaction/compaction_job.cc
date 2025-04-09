@@ -623,11 +623,6 @@ void CompactionJob::GenSubcompactionBoundaries() {
 }
 
 Status CompactionJob::Run() {
-  auto& cachestream = Cachestream::getInstance();
-
-  int tid = syscall(SYS_gettid);
-  cachestream.add_tgid(tid);
-
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
   TEST_SYNC_POINT("CompactionJob::Run():Start");
@@ -724,6 +719,10 @@ Status CompactionJob::Run() {
         compact_->compaction->mutable_cf_options()->prefix_extractor;
     std::atomic<size_t> next_file_idx(0);
     auto verify_table = [&](Status& output_status) {
+      auto& cachestream = Cachestream::getInstance();
+      int tid = syscall(SYS_gettid);
+      CachestreamTidGuard tid_guard(cachestream, tid);
+
       while (true) {
         size_t file_idx = next_file_idx.fetch_add(1);
         if (file_idx >= files_output.size()) {
@@ -856,7 +855,6 @@ Status CompactionJob::Run() {
   compact_->status = status;
   TEST_SYNC_POINT_CALLBACK("CompactionJob::Run():EndStatusSet", &status);
 
-  cachestream.remove_tgid(tid);
   return status;
 }
 
@@ -1083,6 +1081,12 @@ void CompactionJob::NotifyOnSubcompactionCompleted(
 void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   assert(sub_compact);
   assert(sub_compact->compaction);
+
+  // Add current thread's TID to cachestream map using RAII
+  auto& cachestream = Cachestream::getInstance();
+  int tid = syscall(SYS_gettid);
+  CachestreamTidGuard tid_guard(cachestream, tid);
+
   if (db_options_.compaction_service) {
     CompactionServiceJobStatus comp_status =
         ProcessKeyValueCompactionWithCompactionService(sub_compact);
