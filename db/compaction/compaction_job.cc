@@ -60,8 +60,6 @@
 #include "cachestream/cachestream.h"
 #include <sys/syscall.h>
 
-#include <iostream>
-
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetCompactionReasonString(CompactionReason compaction_reason) {
