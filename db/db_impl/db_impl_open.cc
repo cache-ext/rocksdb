@@ -28,6 +28,8 @@
 #include "util/string_util.h"
 #include "util/udt_util.h"
 
+#include "cachestream/cachestream.h"
+
 namespace ROCKSDB_NAMESPACE {
 Options SanitizeOptions(const std::string& dbname, const Options& src,
                         bool read_only, Status* logger_creation_s) {
@@ -1952,6 +1954,9 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   assert(handles);
   handles->clear();
 
+  // Initialize Cachestream singleton, joins cgroup and loads BPF program.
+  Cachestream::getInstance();
+  
   size_t max_write_buffer_size = 0;
   for (auto cf : column_families) {
     max_write_buffer_size =

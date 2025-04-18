@@ -60,6 +60,8 @@
 #include "cachestream/cachestream.h"
 #include <sys/syscall.h>
 
+#include <iostream>
+
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetCompactionReasonString(CompactionReason compaction_reason) {
@@ -719,9 +721,6 @@ Status CompactionJob::Run() {
         compact_->compaction->mutable_cf_options()->prefix_extractor;
     std::atomic<size_t> next_file_idx(0);
     auto verify_table = [&](Status& output_status) {
-      auto& cachestream = Cachestream::getInstance();
-      int tid = syscall(SYS_gettid);
-      CachestreamTidGuard tid_guard(cachestream, tid);
 
       while (true) {
         size_t file_idx = next_file_idx.fetch_add(1);
@@ -1082,7 +1081,6 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   assert(sub_compact);
   assert(sub_compact->compaction);
 
-  // Add current thread's TID to cachestream map using RAII
   auto& cachestream = Cachestream::getInstance();
   int tid = syscall(SYS_gettid);
   CachestreamTidGuard tid_guard(cachestream, tid);
