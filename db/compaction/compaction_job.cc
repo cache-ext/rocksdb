@@ -57,9 +57,6 @@
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
 
-#include "cachestream/cachestream.h"
-#include <sys/syscall.h>
-
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetCompactionReasonString(CompactionReason compaction_reason) {
@@ -1078,10 +1075,6 @@ void CompactionJob::NotifyOnSubcompactionCompleted(
 void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   assert(sub_compact);
   assert(sub_compact->compaction);
-
-  auto& cachestream = Cachestream::getInstance();
-  int tid = syscall(SYS_gettid);
-  CachestreamTidGuard tid_guard(cachestream, tid);
 
   if (db_options_.compaction_service) {
     CompactionServiceJobStatus comp_status =

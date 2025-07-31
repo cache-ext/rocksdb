@@ -8,150 +8,117 @@
 #include <unistd.h>
 #include <sys/types.h>
 
-
 namespace ROCKSDB_NAMESPACE {
 
-int Cachestream::join_cgroup() {
-    const char* cgroup_path = getenv(CS_ENV);
-    if (!cgroup_path || strlen(cgroup_path) == 0) {
-#if DEBUG
-        std::cerr << CS_ENV << " not set, running vanilla" << std::endl;
-#endif
-        return -1;
-    }
-    // open cgroup path as RDONLY
-    int fd_cg = open(cgroup_path, O_RDONLY);
-    if (fd_cg < 0) {
-        std::cerr << "open: " << strerror(errno) << std::endl;
-        exit(1);
-    }
-    std::string cgroup_procs_path = std::string(cgroup_path) + "/cgroup.procs";
-
-    int fd_procs = open(cgroup_procs_path.c_str(), O_WRONLY);
-    if (fd_procs < 0) {
-        std::cerr << "open: " << strerror(errno) << std::endl;
-        close(fd_cg);
-        exit(1);
-    }
-
-    pid_t pid = getpid();
-    if (dprintf(fd_procs, "%d\n", pid) < 0) {
-        std::cerr << "dprintf: " << strerror(errno) << std::endl;
-        close(fd_cg);
-        close(fd_procs);
-        exit(1);
-    }
-
-    close(fd_procs);
-
-    std::cout << "joined cgroup: " << cgroup_path << std::endl;
-    return fd_cg;
-}
 
 int Cachestream::load_bpf_program() {
-    struct bpf_program *prog;
-
-    obj = bpf_object__open_file(HAPPYCACHE_PATH, NULL);
-    if (libbpf_get_error(obj)) {
-        fprintf(stderr, "ERROR: opening BPF object file (%s) failed: %s\n",
-                HAPPYCACHE_PATH, strerror(errno));
+    // Initialize link to NULL to avoid cleanup issues
+    link = NULL;
+    
+    // Open and load BPF skeleton
+    skel = cachestream_admit_hook_bpf__open();
+    if (!skel) {
+        fprintf(stderr, "Failed to open BPF skeleton: %s\n", strerror(errno));
         return -1;
     }
-
-    prog = bpf_object__find_program_by_name(obj, "happy_cache");
-    if (!prog) {
-        fprintf(stderr, "ERROR: finding BPF program 'happy_cache' failed\n");
-        bpf_object__close(obj);
+    
+    int ret = cachestream_admit_hook_bpf__load(skel);
+    if (ret) {
+        fprintf(stderr, "Failed to load BPF skeleton: %s\n", strerror(errno));
+        cachestream_admit_hook_bpf__destroy(skel);
+        skel = NULL;
         return -1;
     }
-
-    if (bpf_program__type(prog) != BPF_PROG_TYPE_CGROUP_CACHESTREAM) {
-        bpf_program__set_type(prog, BPF_PROG_TYPE_CGROUP_CACHESTREAM);
-    }
-
-    if (bpf_object__load(obj)) {
-        fprintf(stderr, "ERROR: loading BPF object failed: %s\n", strerror(errno)); // Added strerror
-        bpf_object__close(obj);
-        return -1;
-    }
-
-    map_fd = bpf_object__find_map_fd_by_name(obj, "tids");
+    
+    // Get map fd
+    map_fd = bpf_map__fd(skel->maps.bypassed_tids);
     if (map_fd < 0) {
-        fprintf(stderr, "ERROR: finding map FD for 'tids' failed: %s\n", strerror(errno)); // Added strerror
-        bpf_object__close(obj);
+        fprintf(stderr, "Failed to get map fd: %s\n", strerror(errno));
+        cachestream_admit_hook_bpf__destroy(skel);
+        skel = NULL;
         return -1;
     }
-
-    prog_fd = bpf_program__fd(prog);
-    if (prog_fd < 0) {
-        fprintf(stderr, "ERROR: getting BPF program FD failed: %s\n", strerror(errno)); // Added strerror
-        bpf_object__close(obj);
-        close(map_fd);
+    
+    // Attach struct_ops
+    link = bpf_map__attach_struct_ops(skel->maps.admit_hook_ops);
+    if (!link) {
+        fprintf(stderr, "Failed to attach BPF struct_ops map: %s\n", strerror(errno));
+        cachestream_admit_hook_bpf__destroy(skel);
+        skel = NULL;
         map_fd = -1;
+        link = NULL;
         return -1;
     }
-
-    // Print FDs
-    std::cout << "prog_fd: " << prog_fd << std::endl;
-    std::cout << "cgroup_fd: " << cgroup_fd << std::endl;
-    std::cout << "map_fd: " << map_fd << std::endl;
-
-    if (bpf_prog_attach(prog_fd, cgroup_fd, BPF_CGROUP_CACHESTREAM, 0)) {
-        fprintf(stderr, "ERROR: Failed to attach BPF program: %s\n", strerror(errno));
-        close(prog_fd);
-        close(map_fd);
-        prog_fd = -1;
-        map_fd = -1;
-        bpf_object__close(obj);
-        return -1;
-    }
-
+    
+#if DEBUG
+    std::cout << "BPF program loaded and attached successfully" << std::endl;
+#endif
+    
     return 0;
 }
 
 Cachestream::Cachestream() {
-    if ((cgroup_fd = join_cgroup()) == -1) {
-#if DEBUG
-        std::cerr << CS_ENV << " not set, running vanilla" << std::endl;
-#endif
-        return;
-    }
-
     if (load_bpf_program() < 0) {
-        std::cerr << "Failed to load BPF program" << std::endl;
-        close(cgroup_fd);
-        exit(1);
+        std::cerr << "Failed to load BPF program, running without page cache bypass" << std::endl;
+        initialized = false;
+    } else {
+        initialized = true;
     }
 }
 
 Cachestream::~Cachestream() {
-    if (prog_fd >= 0) {
-        close(prog_fd);
+#ifdef BPF_DEBUG
+    // Print admission statistics before cleanup
+    if (initialized && skel && skel->maps.admission_stats) {
+        int stats_fd = bpf_map__fd(skel->maps.admission_stats);
+        if (stats_fd >= 0) {
+            __u64 bypass_count = 0, normal_count = 0;
+            __u32 key;
+            
+            // Read bypass count (key 0)
+            key = 0;
+            if (bpf_map_lookup_elem(stats_fd, &key, &bypass_count) == 0) {
+                // Read normal count (key 1)
+                key = 1;
+                if (bpf_map_lookup_elem(stats_fd, &key, &normal_count) == 0) {
+                    __u64 total = bypass_count + normal_count;
+                    fprintf(stderr, "\n=== Cachestream Admission Statistics ===\n");
+                    fprintf(stderr, "Page cache bypassed: %llu times\n", bypass_count);
+                    fprintf(stderr, "Page cache used normally: %llu times\n", normal_count);
+                    fprintf(stderr, "Total admissions: %llu\n", total);
+                    if (total > 0) {
+                        double bypass_percent = (double)bypass_count / total * 100.0;
+                        fprintf(stderr, "Bypass percentage: %.2f%%\n", bypass_percent);
+                    }
+                    fprintf(stderr, "=====================================\n\n");
+                }
+            }
+        }
     }
-    if (map_fd >= 0) {
-        close(map_fd);
+#endif
+
+    if (link) {
+        bpf_link__destroy(link);
     }
-    if (cgroup_fd >= 0) {
-        close(cgroup_fd);
-    }
-    if (obj) {
-        bpf_object__close(obj);
+    if (skel) {
+        cachestream_admit_hook_bpf__destroy(skel);
     }
 }
 void Cachestream::add_tgid(int tgid) {
-    // noop if not setup
-    if (cgroup_fd == -1) {
+    // noop if not initialized
+    if (!initialized) {
 #if DEBUG
-        std::cerr << "cgroup not joined, skipping add_tgid" << std::endl;
+        std::cerr << "BPF not initialized, skipping add_tgid" << std::endl;
 #endif
         return;
     }
+
 
 #if DEBUG
     std::cout << "adding tgid: " << tgid << std::endl;
 #endif
 
-    __u64 key = tgid;
+    __u32 key = tgid;
     __u8 value = 1;
     int ret = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
     if (ret < 0) {
@@ -161,19 +128,20 @@ void Cachestream::add_tgid(int tgid) {
 }
 
 void Cachestream::remove_tgid(int tgid) {
-    // noop if not setup
-    if (cgroup_fd == -1) {
+    // noop if not initialized
+    if (!initialized) {
 #if DEBUG
-        std::cerr << "cgroup not joined, skipping remove_tgid" << std::endl;
+        std::cerr << "BPF not initialized, skipping remove_tgid" << std::endl;
 #endif
         return;
     }
+
 
 #if DEBUG
     std::cout << "removing tgid: " << tgid << std::endl;
 #endif
 
-    __u64 key = tgid;
+    __u32 key = tgid;
     int ret = bpf_map_delete_elem(map_fd, &key);
     if (ret < 0) {
         std::cerr << "bpf_map_delete_elem: " << strerror(errno) << std::endl;

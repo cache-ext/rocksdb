@@ -18,6 +18,8 @@
 #include <sys/syscall.h>
 #endif
 
+#include "cachestream/cachestream.h"
+
 #include <stdlib.h>
 
 #include <algorithm>
@@ -348,6 +350,13 @@ void ThreadPoolImpl::Impl::BGThreadWrapper(void* arg) {
   }
   assert(thread_type != ThreadStatus::NUM_THREAD_TYPES);
   ThreadStatusUtil::RegisterThread(tp->GetHostEnv(), thread_type);
+  
+  // Register compaction threads with cachestream for page cache bypass
+  if (thread_type == ThreadStatus::LOW_PRIORITY || 
+      thread_type == ThreadStatus::BOTTOM_PRIORITY) {
+    int tid = syscall(SYS_gettid);
+    Cachestream::getInstance().add_tgid(tid);
+  }
 #endif
   delete meta;
   tp->BGThread(thread_id);
