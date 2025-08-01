@@ -13,7 +13,11 @@ include common.mk
 CLEAN_FILES = # deliberately empty, so we can append below.
 CFLAGS += ${EXTRA_CFLAGS}
 CXXFLAGS += ${EXTRA_CXXFLAGS}
-LDFLAGS += $(EXTRA_LDFLAGS) -I/mydata/bpf -lbpf
+ifdef BPF_DEBUG
+CXXFLAGS += -DBPF_DEBUG
+endif
+
+LDFLAGS += $(EXTRA_LDFLAGS) -lbpf
 MACHINE ?= $(shell uname -m)
 ARFLAGS = ${EXTRA_ARFLAGS} rs
 STRIPFLAGS = -S -x

@@ -3,8 +3,6 @@
 CLANG ?= clang
 BPFTOOL ?= bpftool
 CFLAGS = -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -c -g -Wall
-
-# Add BPF_DEBUG flag if enabled
 ifdef BPF_DEBUG
 CFLAGS += -DBPF_DEBUG
 endif
