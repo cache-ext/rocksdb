@@ -11,7 +11,7 @@
 #include <bpf/bpf.h>
 
 #include "rocksdb/rocksdb_namespace.h"
-#include "bpf/cachestream_admit_hook.skel.h"
+#include "cachestream/bpf/cachestream_admit_hook.skel.h"
 
 // Set DEBUG to 1 to enable debug prints
 #ifndef DEBUG
@@ -39,6 +39,7 @@ private:
     int load_bpf_program();
 
     int map_fd = -1;
+    int cgroup_fd = -1;
     struct cachestream_admit_hook_bpf *skel = NULL;
     struct bpf_link *link = NULL;
     bool initialized = false;

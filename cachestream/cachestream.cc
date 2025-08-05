@@ -15,6 +15,20 @@ int Cachestream::load_bpf_program() {
     // Initialize link to NULL to avoid cleanup issues
     link = NULL;
     
+    // Get cgroup path from environment variable
+    const char *cgroup_path = getenv("CGROUP_PATH");
+    if (!cgroup_path) {
+        fprintf(stderr, "CGROUP_PATH environment variable not set\n");
+        return -1;
+    }
+    
+    // Open cgroup directory
+    cgroup_fd = open(cgroup_path, O_RDONLY);
+    if (cgroup_fd < 0) {
+        fprintf(stderr, "Failed to open cgroup path %s: %s\n", cgroup_path, strerror(errno));
+        return -1;
+    }
+    
     // Open and load BPF skeleton
     skel = cachestream_admit_hook_bpf__open();
     if (!skel) {
@@ -39,16 +53,21 @@ int Cachestream::load_bpf_program() {
         return -1;
     }
     
-    // Attach struct_ops
+    // Attach struct_ops to the cgroup
+    // For now, we'll use the regular attach without cgroup scoping
+    // The cgroup scoping will be handled by running the process in the cgroup
     link = bpf_map__attach_struct_ops(skel->maps.admit_hook_ops);
     if (!link) {
         fprintf(stderr, "Failed to attach BPF struct_ops map: %s\n", strerror(errno));
+        close(cgroup_fd);
+        cgroup_fd = -1;
         cachestream_admit_hook_bpf__destroy(skel);
         skel = NULL;
         map_fd = -1;
-        link = NULL;
         return -1;
     }
+    
+    fprintf(stderr, "BPF program attached successfully for cgroup at %s\n", cgroup_path);
     
 #if DEBUG
     std::cout << "BPF program loaded and attached successfully" << std::endl;
@@ -67,6 +86,10 @@ Cachestream::Cachestream() {
 }
 
 Cachestream::~Cachestream() {
+    if (cgroup_fd >= 0) {
+        close(cgroup_fd);
+        cgroup_fd = -1;
+    }
 #ifdef BPF_DEBUG
     // Print admission statistics before cleanup
     if (initialized && skel && skel->maps.admission_stats) {

@@ -59,6 +59,6 @@ bool BPF_STRUCT_OPS(admit_hook_admit_folio, struct cache_ext_admission_ctx *admi
 }
 
 SEC(".struct_ops.link")
-struct page_cache_ext_ops admit_hook_ops = {
+struct cache_ext_ops admit_hook_ops = {
 	.admit_folio = (void *)admit_hook_admit_folio,
 };
