@@ -25,7 +25,8 @@ int Cachestream::load_bpf_program() {
     // Open cgroup directory
     cgroup_fd = open(cgroup_path, O_RDONLY);
     if (cgroup_fd < 0) {
-        fprintf(stderr, "Failed to open cgroup path %s: %s\n", cgroup_path, strerror(errno));
+        fprintf(stderr, "Failed to open cgroup path %s: %s (uid=%d, euid=%d)\n", 
+                cgroup_path, strerror(errno), getuid(), geteuid());
         return -1;
     }
     
@@ -53,12 +54,11 @@ int Cachestream::load_bpf_program() {
         return -1;
     }
     
-    // Attach struct_ops to the cgroup
-    // For now, we'll use the regular attach without cgroup scoping
-    // The cgroup scoping will be handled by running the process in the cgroup
-    link = bpf_map__attach_struct_ops(skel->maps.admit_hook_ops);
+    // Attach cache_ext_ops to the specific cgroup
+    link = bpf_map__attach_cache_ext_ops(skel->maps.admit_hook_ops, cgroup_fd);
     if (!link) {
-        fprintf(stderr, "Failed to attach BPF struct_ops map: %s\n", strerror(errno));
+        fprintf(stderr, "Failed to attach cache_ext_ops to cgroup: %s (errno=%d)\n", 
+                strerror(errno), errno);
         close(cgroup_fd);
         cgroup_fd = -1;
         cachestream_admit_hook_bpf__destroy(skel);
@@ -66,8 +66,6 @@ int Cachestream::load_bpf_program() {
         map_fd = -1;
         return -1;
     }
-    
-    fprintf(stderr, "BPF program attached successfully for cgroup at %s\n", cgroup_path);
     
 #if DEBUG
     std::cout << "BPF program loaded and attached successfully" << std::endl;
