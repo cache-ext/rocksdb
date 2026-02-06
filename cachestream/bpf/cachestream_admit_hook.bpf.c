@@ -14,6 +14,9 @@ char _license[] SEC("license") = "GPL";
 	BPF_PROG(name, args)
 
 #define MAX_ENTRIES 1000
+#define BYPASS_MIN_SIZE (16 * 1024)
+#define SEQ_TOLERANCE (128 * 1024)
+#define BYPASS_ALL 1
 
 // Map to track bypassed thread IDs
 struct {
@@ -22,6 +25,27 @@ struct {
 	__type(key, __u32);
 	__type(value, __u8);
 } bypassed_tids SEC(".maps");
+
+#if !BYPASS_ALL
+struct read_key {
+	__u64 ino;
+	__u32 tid;
+	__u32 pad;
+};
+
+struct read_state {
+	__u64 offset;
+	__u64 size;
+};
+
+// Track last read per (tid, ino) to detect sequential access
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_ENTRIES);
+	__type(key, struct read_key);
+	__type(value, struct read_state);
+} last_reads SEC(".maps");
+#endif
 
 #ifdef BPF_DEBUG
 // Map to track admission statistics
@@ -51,14 +75,47 @@ bool BPF_STRUCT_OPS(admit_hook_admit_folio, struct cache_ext_admission_ctx *admi
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 tid = pid_tgid & 0xffffffff;
 	bool result;
+#if !BYPASS_ALL
+	struct read_key key;
+	struct read_state *state;
+	struct read_state new_state;
+	bool sequential = false;
+#endif
 	
 	__u8 *should_bypass = bpf_map_lookup_elem(&bypassed_tids, &tid);
 	
-	if (should_bypass) {
-		result = true;  // Bypass page cache
-	} else {
+	if (!should_bypass) {
 		result = false; // Use page cache normally
+		goto out;
 	}
+
+#if BYPASS_ALL
+	if (admission_ctx->size >= BYPASS_MIN_SIZE)
+		result = true;  // Bypass page cache for compaction reads
+	else
+		result = false; // Use page cache normally
+#else
+	key.ino = admission_ctx->ino;
+	key.tid = tid;
+	key.pad = 0;
+
+	state = bpf_map_lookup_elem(&last_reads, &key);
+	if (state) {
+		__u64 expected = state->offset + state->size;
+		if (admission_ctx->offset >= expected &&
+		    admission_ctx->offset - expected <= SEQ_TOLERANCE)
+			sequential = true;
+	}
+
+	new_state.offset = admission_ctx->offset;
+	new_state.size = admission_ctx->size;
+	bpf_map_update_elem(&last_reads, &key, &new_state, BPF_ANY);
+
+	if (admission_ctx->size >= BYPASS_MIN_SIZE && sequential)
+		result = true;  // Bypass page cache for sequential reads
+	else
+		result = false; // Use page cache normally
+#endif
 
 #ifdef BPF_DEBUG
 	__u32 key = result ? 0 : 1;
@@ -68,6 +125,7 @@ bool BPF_STRUCT_OPS(admit_hook_admit_folio, struct cache_ext_admission_ctx *admi
 	}
 #endif
 
+	out:
 	return result;
 }
 
